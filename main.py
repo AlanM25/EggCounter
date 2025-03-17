@@ -1,83 +1,85 @@
+import sys
 import cv2
-import numpy as np
-from tkinter import Tk
-from tkinter.filedialog import askopenfilename
+from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QFileDialog
+from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtGui import QImage, QPixmap
+from egg_detection import detectar_tapa, contar_huevos
 
+class EggCounterApp(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Proyecto - Contador de Huevos")
+        self.setGeometry(100, 100, 900, 700)
 
-def contar_huevos():
-    # Ocultar la ventana principal de Tkinter
-    Tk().withdraw()
+        self.video_label = QLabel(self)
+        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-    # Abrir cuadro de diálogo para seleccionar el archivo
-    video_path = askopenfilename(title="Seleccionar un video", filetypes=[("Archivos de video", ".mp4;.avi;*.mov")])
+        self.contador_label = QLabel("Huevos detectados: 0", self)
+        self.btn_seleccionar = QPushButton("Seleccionar Video", self)
+        self.btn_seleccionar.clicked.connect(self.abrir_video)
 
-    if not video_path:
-        print("No se seleccionó ningún video.")
-        return
+        layout = QVBoxLayout()
+        layout.addWidget(self.video_label)
+        layout.addWidget(self.contador_label)
+        layout.addWidget(self.btn_seleccionar)
+        self.setLayout(layout)
 
-    # Cargar el video
-    captura = cv2.VideoCapture(video_path)
+        self.cap = None
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.leer_frame)
+        self.contorno_tapa = None
 
-    if not captura.isOpened():
-        print("No se pudo abrir el video.")
-        return
+    def abrir_video(self):
+        ruta_video, _ = QFileDialog.getOpenFileName(self, "Seleccionar Video", "", "Videos (*.mp4 *.avi *.mov)")
+        if ruta_video:
+            self.cap = cv2.VideoCapture(ruta_video)
+            if not self.cap.isOpened():
+                print("[ERROR] No se pudo abrir el video")
+                return
 
-    conteos = []
+            ret, frame = self.cap.read()
+            if not ret:
+                print("[ERROR] No se pudo leer el primer frame del video")
+                return
 
-    while True:
-        # Leer un frame del video
-        ret, frame = captura.read()
+            frame, self.contorno_tapa = detectar_tapa(frame)
+            self.mostrar_frame(frame)
+            self.timer.start(30)
+
+    def leer_frame(self):
+        if self.cap is None or not self.cap.isOpened():
+            return
+
+        ret, frame = self.cap.read()
         if not ret:
-            break
+            self.timer.stop()
+            self.cap.release()
+            return
 
-        # Convertir a escala de grises
-        gris = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        frame_procesado, total_huevos = contar_huevos(frame, self.contorno_tapa)
+        self.mostrar_frame(frame_procesado)
+        self.contador_label.setText(f"Huevos detectados: {total_huevos}")
 
-        # Aplicar un desenfoque para reducir ruido
-        gris = cv2.GaussianBlur(gris, (7, 7), 1.5)
+    def mostrar_frame(self, frame):
+        
+        max_width = 750
+        max_height = 550
+        h, w, _ = frame.shape
+        scale_w = max_width / w
+        scale_h = max_height / h
+        scale = min(scale_w, scale_h, 1.0)
+        if scale < 1.0:
+            frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
 
-        # Detectar círculos usando la Transformada de Hough
-        circulos = cv2.HoughCircles(gris, cv2.HOUGH_GRADIENT, dp=1.2, minDist=30,
-                                    param1=50, param2=30, minRadius=10, maxRadius=50)
-
-        huevos_detectados = 0
-        if circulos is not None:
-            circulos = np.uint16(np.around(circulos))
-
-            for (x, y, r) in circulos[0, :]:
-                # Obtener el color promedio dentro del círculo
-                mascara = np.zeros_like(gris)
-                cv2.circle(mascara, (x, y), r, 255, -1)
-                color_promedio = cv2.mean(gris, mask=mascara)[0]
-
-                # Filtrar círculos que tengan color gris-blanco (brillo medio)
-                if 150 < color_promedio < 230:
-                    huevos_detectados += 1
-                    cv2.circle(frame, (x, y), r, (0, 255, 0), 2)  # Dibujar el círculo
-                    cv2.circle(frame, (x, y), 2, (0, 0, 255), 3)  # Dibujar el centro
-
-        conteos.append(huevos_detectados)
-
-        # Mostrar conteo en pantalla
-        cv2.putText(frame, f"Huevos detectados: {huevos_detectados}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.imshow('Conteo de Huevos', frame)
-
-        # Salir con 'q'
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    # Mostrar el conteo promedio de huevos
-    if conteos:
-        promedio_huevos = round(sum(conteos) / len(conteos))
-        print(f"Numero estimado de huevos: {promedio_huevos}")
-    else:
-        print("No se detectaron huevos.")
-
-    # Liberar recursos
-    captura.release()
-    cv2.destroyAllWindows()
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = frame_rgb.shape
+        bytes_per_line = ch * w
+        qimg = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        self.video_label.setPixmap(QPixmap.fromImage(qimg))
 
 
-# Ejecutar el programa
-contar_huevos()
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    ventana = EggCounterApp()
+    ventana.show()
+    sys.exit(app.exec())
